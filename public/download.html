@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>下载 学生综合素质测评管理系统 安装包</title>
+  <style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px;
+      background: #f6f6f7; color: #18181b;
+    }
+    @media (prefers-color-scheme: dark) {
+      body { background: #09090b; color: #e4e4e7; }
+      .card { background: #18181b; border-color: #27272a; }
+      .btn.gh { background: #24292f; }
+    }
+    .card {
+      max-width: 520px; width: 100%; background: #fff; border: 1px solid #e4e4e7;
+      border-radius: 16px; padding: 28px; box-shadow: 0 4px 24px rgba(0,0,0,.06);
+    }
+    h1 { font-size: 20px; margin: 0 0 6px; }
+    p.sub { margin: 0 0 20px; color: #71717a; font-size: 14px; }
+    .ver { font-size: 13px; color: #71717a; margin-bottom: 20px; }
+    .ver b { color: #16a34a; font-weight: 600; }
+    .btn {
+      display: block; width: 100%; text-align: center; text-decoration: none; padding: 12px 16px;
+      border-radius: 10px; font-size: 15px; font-weight: 600; margin-top: 12px; transition: opacity .15s;
+    }
+    .btn:hover { opacity: .85; }
+    .btn.primary { background: #16a34a; color: #fff; }
+    .btn.gh { background: #e4e4e7; color: #111; }
+    .notes { margin-top: 22px; border-top: 1px solid #e4e4e7; padding-top: 16px; font-size: 13px; color: #52525b; white-space: pre-wrap; }
+    .foot { margin-top: 20px; font-size: 12px; color: #a1a1aa; text-align: center; }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>学生综合素质测评管理系统 下载</h1>
+    <p class="sub">学生综合素质测评管理系统桌面端 · Windows</p>
+    <div class="ver" id="ver">正在读取最新版本…</div>
+    <a class="btn primary" id="github" href="#" target="_blank" rel="noopener">从 GitHub 下载安装包</a>
+    <a class="btn gh" id="mirror" href="#" target="_blank" rel="noopener">国内加速镜像下载</a>
+    <div class="notes" id="notes" hidden></div>
+    <div class="foot">此页由 web 预览版 Vercel 项目托管，自动读取 updates/latest.json</div>
+  </main>
+  <script>
+    // 读取同站 latest.json（管理端主进程 updater.ts 也读取同一文件做版本检查）。
+    const BASE = new URL('.', document.baseURI).href.replace(/\/$/, '')
+    const ghUrl = 'https://github.com/this-is-h/Dys-Management-System'
+    const mirrorPrefix = 'https://ghproxy.com/https://github.com/this-is-h/Dys-Management-System'
+    fetch(BASE + '/updates/latest.json')
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('not found'))))
+      .then((m) => {
+        const verEl = document.getElementById('ver')
+        verEl.innerHTML = '当前最新版本：<b>' + m.version + '</b>'
+        const file = '学生综合素质测评管理系统-' + m.version + (m.profileId ? '-' + m.profileId : '') + '-setup.exe'
+        const rel = ghUrl + '/releases/download/' + m.version
+        document.getElementById('github').href = rel + '/' + encodeURIComponent(file)
+        document.getElementById('mirror').href = mirrorPrefix + '/releases/download/' + m.version + '/' + encodeURIComponent(file)
+        if (m.notes) { const n = document.getElementById('notes'); n.hidden = false; n.textContent = m.notes }
+      })
+      .catch(() => {
+        document.getElementById('ver').textContent = '未能获取版本信息'
+      })
+  </script>
+</body>
+</html>

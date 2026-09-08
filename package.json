@@ -1,0 +1,80 @@
+{
+    "name": "sces-web",
+    "version": "1.1.0",
+    "private": true,
+    "license": "UNLICENSED",
+    "type": "module",
+    "engines": {
+        "node": "^20.19.0 || ^22.12.0"
+    },
+    "packageManager": "pnpm@10.9.0",
+    "scripts": {
+        "prepare": "husky",
+        "dev": "vite",
+        "build": "run-p type-check \"build-only {@}\" --",
+        "preview": "vite preview",
+        "test:unit": "vitest",
+        "test:coverage": "vitest run --coverage",
+        "test:coverage:nyc": "nyc npm run test:coverage",
+        "export:class": "node ./src/utils/excel/runner.js class",
+        "export:grade": "node ./src/utils/excel/runner.js grade",
+        "build-only": "vite build",
+        "type-check": "vue-tsc --build",
+        "lint": "eslint . --fix --cache",
+        "format": "prettier --write --experimental-cli src/"
+    },
+    "docs": {
+        "architecture": "docs/architecture.md"
+    },
+    "dependencies": {
+        "@iconify-json/lucide": "^1.2.98",
+        "@iconify-json/streamline-plump": "^1.2.0",
+        "@nuxt/ui": "^4.5.1",
+        "@vant/touch-emulator": "^1.5.0",
+        "compressorjs": "^1.2.1",
+        "element-plus": "^2.13.5",
+        "exceljs": "^4.4.0",
+        "file-saver": "^2.0.5",
+        "localforage": "^1.10.0",
+        "pinia": "^3.0.4",
+        "tailwindcss": "^4.2.1",
+        "vant": "^4.9.22",
+        "vue": "^3.5.30",
+        "vue-router": "^4.6.4",
+        "zod": "^4.3.6"
+    },
+    "devDependencies": {
+        "@tsconfig/node24": "^24.0.4",
+        "@types/jsdom": "^27.0.0",
+        "@types/node": "^24.12.0",
+        "@vitejs/plugin-vue": "^6.0.5",
+        "@vitejs/plugin-vue-jsx": "^5.1.5",
+        "@vitest/coverage-v8": "^4.1.0",
+        "@vitest/eslint-plugin": "^1.6.12",
+        "@vue/eslint-config-prettier": "^10.2.0",
+        "@vue/eslint-config-typescript": "^14.7.0",
+        "@commitlint/cli": "^19.8.1",
+        "@commitlint/config-conventional": "^19.8.1",
+        "@vue/test-utils": "^2.4.6",
+        "husky": "^9.1.7",
+        "lint-staged": "^15.5.2",
+        "@vue/tsconfig": "^0.8.1",
+        "eslint": "^9.39.4",
+        "eslint-plugin-vue": "~10.6.2",
+        "jiti": "^2.6.1",
+        "jsdom": "^27.4.0",
+        "npm-run-all2": "^8.0.4",
+        "nyc": "^17.1.0",
+        "prettier": "3.7.4",
+        "typescript": "~5.9.3",
+        "vite": "^7.3.1",
+        "vite-plugin-vue-devtools": "^8.1.0",
+        "vitest": "^4.1.0",
+        "vue-tsc": "^3.2.5"
+    },
+    "pnpm": {
+        "overrides": {
+            "unzipper": "0.12.5"
+        }
+    }
+}
