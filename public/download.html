@@ -50,7 +50,7 @@
     // 读取同站 latest.json（管理端主进程 updater.ts 也读取同一文件做版本检查）。
     // 版本元数据由 SCES-Server 仓库维护（SCES-Web-Vercel 不再托管）。
     // TODO(部署): 替换为 SCES-Server 实际静态托管 URL
-    const UPDATES_URL = 'https://dms.thisish.cn/updates/latest.json'
+    const UPDATES_URL = 'https://sces.thisish.cn/updates/latest.json'
     const ghUrl = 'https://github.com/this-is-h/SCES-Management-Desktop-Electron'
     const mirrorPrefix = 'https://ghproxy.com/https://github.com/this-is-h/SCES-Management-Desktop-Electron'
     fetch(UPDATES_URL)
