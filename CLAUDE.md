@@ -1,67 +1,54 @@
-# web — 预览版（参考实现）
+# SCES-Web-Vercel — 预览版门户
 
-## 项目概述
+学生综合素质测评管理系统（SCES）· 浏览器预览版（Vue 3 + Vite + Pinia + Nuxt UI + Element Plus + Vant + TailwindCSS + ExcelJS + Zod + Vitest），Vercel 托管。
+实现学生端、班级端（三级）、年级端（一二级）预览与下载页。**预览版与其他端解耦**：不消费 `@sces/shared`、不承载版本元数据（版本真源在 SCES-Server）。
 
-浏览器预览版（Vue 3），实现学生端、班级端（管理端三级）、年级端（管理端一二级）。**参考实现，不直接照搬**——正式版为 `user/wechat`（学生端）+ `management/desktop`（管理端）。预览版已验证的技术（混合加密、学号冲突锁定、Excel 导出、配置驱动表单）将迁移到正式版。
+## 开发规范（必读，新会话遵守）
 
-## 技术栈
+本仓库采用**简化版 Git Flow** 与 **Conventional Commits（约定式提交）**，由 husky 钩子与 CI 强制落地。详情见 `CONTRIBUTING.md`。
 
-Vue 3 + Vite + Pinia + Nuxt UI + Element Plus + Vant + TailwindCSS + ExcelJS + Zod + Vitest
+### 分支模型
+
+- 长期分支：`main`（生产，Vercel 绑定 main 部署，禁直推）、`develop`（日常开发，默认分支，PR 指向这里）
+- 短期分支：`feature/*`、`bugfix/*`、`hotfix/*`、`chore/*`、`release/*`（从 develop 创建，完成 PR 合并回 develop；hotfix 从 main 创建，合并回 main 与 develop）
+- 分支名必须以前缀开头（CI 校验）；`main`/`develop` 开启保护（个人账号仓库暂无法强制，需自觉遵守）
+
+### 提交规范（commit-msg 钩子强制）
+
+格式：`<type>(<scope>): <subject>`
+
+- `type` 必填：`feat` `fix` `docs` `style` `refactor` `perf` `test` `chore` `build` `ci` `revert`
+- `scope` 可选、小写（本仓：src/views/components/utils/excel/configs/updates/docs/build/ci/deps）
+- `subject` 必填：祈使句、首字母小写、**≤50 字符**、句尾无句号；header ≤72
+- 违规提交会被 commitlint 直接拒绝（示例：`fix(configs): 调整 911 项步长为 0.5`）
+
+### 钩子与 CI 门禁
+
+- `pre-commit`：`lint-staged`（eslint --fix + prettier）+ `pnpm type-check`；`commit-msg`：commitlint
+- CI：编译 + Lint + 测试（vitest，测试文件存在时触发）+ `pnpm audit`(high) + gitleaks + 分支名
 
 ## 目录结构
 
-```
-src/
-├── views/            # 页面级组件
-│   ├── student/      # 学生端（StudentView / StudentMobileView）
-│   ├── class/        # 班级端（三级）：ClassOverview / ClassStudent / ClassSettings
-│   └── grade/        # 年级端（一二级）：GradeOverview / GradeStudent / GradeSettings
-├── components/       # 通用组件（student/StudentTable 等）
-├── stores/           # Pinia stores（studentData / currentStudent / selection / delete）
-├── utils/            # 业务工具（见下）
-└── router/           # 路由（含移动端/PC 分流）
-public/configs/       # 运行时配置（config.js 服务端配置、student.js 德育分模板）
-```
+| 路径                   | 职责                                                                                                  |
+| ---------------------- | ----------------------------------------------------------------------------------------------------- |
+| `src/`                 | 页面（student/class/grade）、组件、stores、excel 导出工具                                             |
+| `public/download.html` | 安装包下载页（读 `https://sces.thisish.cn/updates/latest.json`，指向 SCES-Management GitHub Release） |
+| `public/configs/`      | 预览端运行配置（学期、必填类别、步长等；改动走 PR）                                                   |
+| `docs/`                | migration-primevue-nuxtui 等随仓文档                                                                  |
 
-## 核心模块（src/utils/）
+## 部署与跨仓约定
 
-| 文件 | 职责 |
-|------|------|
-| `crypto.js` | RSA-OAEP-256 + AES-GCM-256 混合加密、密钥对生成 |
-| `dyfFile.js` | `.dyf` 申请文件生成/解析（加密 + 哈希） |
-| `studentStorage.js` | 学生数据本地存储（File System Access API）、数据规范化 |
-| `totalScore.js` | 德育分总分计算（惩罚分类目为负） |
-| `config.js` | 配置加载（服务端配置 + 学生模板，带缓存与迁移） |
-| `importStudentsFromFiles.js` | 批量导入 |
-| `excel/` | Excel 导出（exceljs，模板驱动） |
-| `FileSystemManager.js` | File System Access API 封装 |
+- **Vercel git 集成绑定本仓库 `main`**：合并 main 自动生产部署；PR 自动预览；
+- 版本元数据 `latest.json` 由 SCES-Server 仓库维护（`updates/latest.json`），管理端 release CI 跨仓推送——**本仓库不托管版本元数据**；
+- `public/configs/` 是预览端运行时配置（SCES-Server 契约种子推导源之一，改后需同步到 SCES-Server `contracts/seed-sources/` 并重新生成种子，见 SCES-Server CLAUDE）。
 
-## 数据流
-
-- **学生端**：填写表单 → 导出加密 `.dyf` 文件。
-- **班级端/年级端**：导入 `.dyf` → 本地文件系统存储 → 审核修改 → 导出。
-- **存储**：File System Access API，`class|grade/semesters/<学期>/students/<姓名_学号>/info.json + evidence/`。
-- **学号冲突**：`__学号冲突锁定` 字段 + 冲突处理弹窗（只能设置一次）。
-
-## 开发命令
+## 命令（仓库根）
 
 ```sh
 pnpm install
-pnpm dev          # 开发
-pnpm build        # 构建
-pnpm test:unit    # Vitest 单元测试
-pnpm lint         # ESLint
+pnpm dev                 # Vite 开发
+pnpm build               # 类型检查 + 构建
+pnpm test:unit           # vitest
+pnpm lint                # ESLint
+pnpm export:class|grade  # Excel 导出脚本
 ```
-
-## 已知问题（正式版需解决）
-
-- `StudentTable.vue` 的"虚拟滚动"是**增量渲染**（slice 前 N 行），非真窗口化虚拟滚动。
-- 学生数据全量加载进内存（`studentDataStore` bucket）。
-- 配置硬编码在 `public/configs/`，未从服务端拉取。
-- 学生端导出依赖浏览器 File System Access API，兼容性受限。
-
-## 与正式版的关系
-
-- **迁移**：混合加密、学号冲突锁定、Excel 导出、配置驱动表单。
-- **⚠️ 种子数据上游（勿随意删改）**：`web/public/configs/student.js`（106 项德育明细 + scoreType）与 `config.js`（required/penalty/negative 标记）是 `server/contracts` 励行书院种子的**权威数据源**——由 `server/contracts/scripts/lib/derive-lixing.mjs` 读取并推导。改这两个文件会改变契约种子（`verify:seeds` 逐字节比对会检出）；删除 web/ 会打断种子重建链。"参考实现不照搬"指的是**代码**，不含这两个配置数据源。
-- **不迁移**：File System Access API 存储（正式版用 SQLite）、增量式虚拟滚动（正式版用真窗口化）、硬编码配置（正式版从服务端拉取）。
