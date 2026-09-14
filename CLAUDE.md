@@ -27,6 +27,20 @@
 - `pre-commit`：`lint-staged`（eslint --fix + prettier）+ `pnpm type-check`；`commit-msg`：commitlint
 - CI：编译 + Lint + 测试（vitest，测试文件存在时触发）+ `pnpm audit`(high) + gitleaks + 分支名
 
+### 凭据管理规范（新会话必读）
+
+密钥明文永不入仓库/聊天/文档；轮换在平台侧进行，再同步所有消费处。
+
+- **GitHub fine-grained PAT**（git push、GitHub API、跨仓 CI 的 `SCES_CI_TOKEN` 为同一枚）：
+  存于 **Windows 凭据管理器**条目（target `git:omp://github-pat`，账户 `this-is-h`）。
+  本地取回：`source <workspace根>/gh-token.sh` 导出 `$GITHUB_TOKEN`，或
+  `printf "protocol=omp\nhost=github-pat\n\n" | git credential fill`。
+  凭据丢失/换机后一次性写入：
+  `printf "protocol=omp\nhost=github-pat\nusername=this-is-h\npassword=<PAT>\n" | git credential approve`。
+- **运行时密钥不搬进 OS 凭据管理器**：服务端进程读 `process.env`、本地脚本读仓根 `.env`（gitignored），
+  搬走后运行时不可达。生产环境一律经部署平台（Vercel Project Environment）注入。
+- 本仓为静态预览门户，无服务端密钥；版本元数据与生产密钥归 SCES-Server / SCES-Server-Vercel。
+
 ## 目录结构
 
 | 路径                   | 职责                                                                                                  |
