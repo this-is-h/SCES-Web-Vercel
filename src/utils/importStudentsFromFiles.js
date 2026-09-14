@@ -1,4 +1,6 @@
-export const importStudentsFromFiles = async ({ files, importStudent, onProgress }) => {
+// 批量导入：逐个文件交给 importFile（基于 File 对象的流式解析；绝不把整文件读成 text）。
+// progress.setTotal(n) 由 importFile 在获知文件内学生数后调用；progress.advance() 每处理一名学生一次。
+export const importStudentsFromFiles = async ({ files, importFile, onProgress }) => {
     const list = Array.from(files || [])
     const results = []
     let done = 0
@@ -11,10 +13,12 @@ export const importStudentsFromFiles = async ({ files, importStudent, onProgress
     }
 
     for (const file of list) {
-        let fileTotal = 1
+        let fileTotal = 0
         let fileDone = 0
-        total += fileTotal
-        if (typeof onProgress === 'function') onProgress({ done, total })
+        const report = () => {
+            if (typeof onProgress === 'function') onProgress({ done, total })
+        }
+        report()
         const progress = {
             setTotal: (nextTotal) => {
                 const normalized = Number(nextTotal)
@@ -23,7 +27,7 @@ export const importStudentsFromFiles = async ({ files, importStudent, onProgress
                 if (safeTotal === fileTotal) return
                 total += safeTotal - fileTotal
                 fileTotal = safeTotal
-                if (typeof onProgress === 'function') onProgress({ done, total })
+                report()
             },
             advance: (step = 1) => {
                 const normalized = Number(step)
@@ -31,12 +35,11 @@ export const importStudentsFromFiles = async ({ files, importStudent, onProgress
                 const safeStep = Math.floor(normalized)
                 fileDone += safeStep
                 done += safeStep
-                if (typeof onProgress === 'function') onProgress({ done, total })
+                report()
             },
         }
         try {
-            const text = await file.text()
-            const result = await importStudent(text, progress)
+            const result = await importFile(file, progress)
             const details = result?.details
             if (Array.isArray(details) && details.length > 0) {
                 for (const d of details) results.push(normalizeRow(d, file?.name))
@@ -53,15 +56,21 @@ export const importStudentsFromFiles = async ({ files, importStudent, onProgress
                 message: e?.message || '导入失败',
             })
         } finally {
-            if (fileDone === 0) done += fileTotal
-            else if (fileDone < fileTotal) done += fileTotal - fileDone
-            if (typeof onProgress === 'function') onProgress({ done, total })
+            // 未上报进度的文件（如解析失败）：按 1 计，保证进度条可前进
+            if (fileTotal === 0) {
+                fileTotal = 1
+                total += 1
+            }
+            if (fileDone < fileTotal) done += fileTotal - fileDone
+            report()
         }
     }
 
     const successCount = results.filter((r) => r.status === 'success').length
     const restoredCount = results.filter((r) => r.status === 'restored').length
-    const failCount = results.filter((r) => r.status !== 'success' && r.status !== 'restored').length
+    const failCount = results.filter(
+        (r) => r.status !== 'success' && r.status !== 'restored',
+    ).length
     const okCount = successCount + restoredCount
     return { results, okCount, successCount, restoredCount, failCount }
 }
