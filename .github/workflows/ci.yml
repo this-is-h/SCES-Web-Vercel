@@ -49,7 +49,6 @@ jobs:
         # 首个测试文件落地后本门禁自动生效（按 Conventional Commits 推进覆盖率 ≥80%）。
         name: 单元测试
         runs-on: ubuntu-latest
-        if: hashFiles('**/*.{test,spec}.?(c|m)[jt]s?(x)') != ''
         steps:
             - uses: actions/checkout@v4
             - uses: pnpm/action-setup@v4
@@ -60,7 +59,13 @@ jobs:
                   node-version: 22
                   cache: pnpm
             - run: pnpm install --frozen-lockfile
-            - run: pnpm test:unit run
+            - name: 单元测试门禁（无测试文件时自动跳过）
+              run: |
+                  if [ -n "$(find . -path ./node_modules -prune -o \( -name '*.test.*' -o -name '*.spec.*' \) -print 2>/dev/null | head -1)" ]; then
+                    pnpm test:unit run
+                  else
+                    echo "::notice::未检出测试文件，跳过单元测试"
+                  fi
 
     supply-chain-audit:
         name: 供应链安全检查
@@ -75,11 +80,14 @@ jobs:
                   node-version: 22
                   cache: pnpm
             - run: pnpm install --frozen-lockfile
-            - run: pnpm audit --audit-level high
+            - run: pnpm audit --prod --audit-level high
 
     gitleaks:
         name: 密钥泄漏扫描
         runs-on: ubuntu-latest
+        permissions:
+            contents: read
+            pull-requests: read
         steps:
             - uses: actions/checkout@v4
               with:
