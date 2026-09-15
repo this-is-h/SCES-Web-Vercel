@@ -1,3 +1,16 @@
+// .dyf v6：分帧流式加密容器（SCES 网页预览端）。
+//
+// 设计目标：单年级数据可 >1GB，任何步骤都不得把整个文件/整个 JSON/单个证据文件物化为字符串。
+//   - 布局：magic+u64头长+头JSON → 帧序列 [manifest...] ( [学生JSON帧] [该生证据帧]… ) ×N
+//   - 学生逐个序列化为 JSON（证据替换为整数 ref），证据以二进制资产帧承载（无 base64 膨胀）；
+//     每帧独立 AES-GCM 认证（帧序号编入 IV），帧头明文长度+帧总数+清单哈希三重校验。
+//   - 写出：学生 JSON 与证据文件均从磁盘流式读取（File.slice），内存峰值 ≈ 1 帧；
+//     帧序按学生分组，导入端每完成一名学生（含其证据落盘）即可推进进度。
+//   - 读入：File.slice 随机读 → 逐帧解密 → 证据拼完即交 evidenceSink 落盘并释放；
+//     学生帧拼完 → 校验 → JSON.parse → ref 还原为磁盘文件名 → 交给 onStudent → 释放。
+//   - 兼容：可解析 v3（单块 JSON inline）与更早的裸学生 JSON（逐字节保留旧 AES-GCM 语义）；
+//     v5 容器因帧序不同不再支持，请用新版重新导出。
+
 import {
     aesGcmDecrypt,
     aesGcmEncrypt,
@@ -22,9 +35,9 @@ import {
 } from '@/utils/studentStorage'
 import { fileSystemManager } from '@/utils/FileSystemManager'
 
-export const DYF_SCHEMA_VERSION = 5
+export const DYF_SCHEMA_VERSION = 6
 export const DYF_MAGIC = 'SCESDYF'
-export const DYF_FORMAT_VERSION = 5
+export const DYF_FORMAT_VERSION = 6
 export const DEFAULT_DYF_CHUNK_SIZE = 4 * 1024 * 1024
 const MIN_CHUNK = 1024
 const MAX_CHUNK = 64 * 1024 * 1024
@@ -436,7 +449,6 @@ export const createDyfFileBlob = async ({
         )
         emit(cipherPart)
         frameIndex += 1
-        if (onProgress) onProgress({ stage: 'write', done: frameIndex, total: frameCount })
     }
 
     emit(
@@ -458,32 +470,12 @@ export const createDyfFileBlob = async ({
         }
     }
 
-    // 资产帧：逐块从磁盘/File 读，逐块加密写出，内存峰值 = 1 块
-    for (let ai = 0; ai < manifest.assets.length; ai++) {
-        const asset = manifest.assets[ai]
-        const source = assetSources[ai]
-        let written = 0
-        const ranges = splitRanges(asset.z, chunkSize)
-        if (ranges.length === 0) {
-            await emitFrame(KIND_ASSET, ai, new Uint8Array(0))
-        } else {
-            for (const { start, end } of ranges) {
-                const chunk = await source.readSlice(start, end)
-                if (!chunk || chunk.length !== end - start) {
-                    throw new Error(`证据文件读取不完整：${asset.n}`)
-                }
-                await emitFrame(KIND_ASSET, ai, chunk)
-                written += chunk.length
-            }
-        }
-        if (written !== asset.z) {
-            throw new Error(`证据文件大小不一致：${asset.n}（声明 ${asset.z}，实际 ${written}）`)
-        }
-        assetSources[ai] = null
-        if ((ai & 63) === 63) await new Promise((r) => setTimeout(r, 0))
-    }
+    // 帧序按学生分组：[学生 JSON][该生证据帧]…——导入端每完成一名学生（含其证据落盘）
+    // 即可推进一次进度，界面不再长时间停在 0/总数。
+    const assetCountsByStudent = manifest.students.map(() => 0)
+    for (const a of manifest.assets) assetCountsByStudent[a.s] += 1
 
-    // 学生帧
+    let ai = 0
     for (let si = 0; si < studentBlobs.length; si++) {
         const entry = manifest.students[si]
         const blob = studentBlobs[si]
@@ -495,8 +487,35 @@ export const createDyfFileBlob = async ({
         }
         if (written !== entry.n) throw new Error('学生帧写入不完整')
         studentBlobs[si] = null
-        if ((si & 63) === 63) await new Promise((r) => setTimeout(r, 0))
+
+        for (let k = 0; k < assetCountsByStudent[si]; k++, ai++) {
+            const asset = manifest.assets[ai]
+            const source = assetSources[ai]
+            let assetWritten = 0
+            const ranges = splitRanges(asset.z, chunkSize)
+            if (ranges.length === 0) {
+                await emitFrame(KIND_ASSET, ai, new Uint8Array(0))
+            } else {
+                for (const { start, end } of ranges) {
+                    const chunk = await source.readSlice(start, end)
+                    if (!chunk || chunk.length !== end - start) {
+                        throw new Error(`证据文件读取不完整：${asset.n}`)
+                    }
+                    await emitFrame(KIND_ASSET, ai, chunk)
+                    assetWritten += chunk.length
+                }
+            }
+            if (assetWritten !== asset.z) {
+                throw new Error(
+                    `证据文件大小不一致：${asset.n}（声明 ${asset.z}，实际 ${assetWritten}）`,
+                )
+            }
+            assetSources[ai] = null
+        }
+        if (onProgress) onProgress({ stage: 'write', done: si + 1, total: studentBlobs.length })
+        if ((si & 31) === 0) await new Promise((r) => setTimeout(r, 0))
     }
+    if (ai !== manifest.assets.length) throw new Error('证据帧未全部写出')
     flush()
 
     if (frameIndex !== frameCount) {
@@ -528,6 +547,8 @@ const readAt = async (file, offset, length) => {
  * @param {(asset: {si: number, category: string, group: number, item: number, fileIndex: number, name: string, mime: string, blob: Blob}) => Promise<string|null>|string|null} [options.evidenceSink]
  *        提供时：资产帧解密后拼装为 Blob 交给 sink 落盘，返回磁盘文件名并自动替换学生 JSON 中的 ref。
  * @param {(p: {stage: string, done: number, total: number}) => void} [options.onProgress]
+ * @param {(done: number, total: number) => void} [options.onStudentProgress]
+ *        每名学生（含其证据）完成时回调，直接驱动导入进度条；与 onProgress 互补。
  * @returns {Promise<{ok: boolean, type?: string, count?: number, message?: string}>}
  */
 export const parseDyfFile = async ({
@@ -538,6 +559,7 @@ export const parseDyfFile = async ({
     onMeta,
     evidenceSink,
     onProgress,
+    onStudentProgress,
 }) => {
     try {
         return await parseDyfFileInner({
@@ -548,6 +570,7 @@ export const parseDyfFile = async ({
             onMeta,
             evidenceSink,
             onProgress,
+            onStudentProgress,
         })
     } catch (e) {
         const msg = e?.message || String(e)
@@ -567,6 +590,7 @@ const parseDyfFileInner = async ({
     onMeta,
     evidenceSink,
     onProgress,
+    onStudentProgress,
 }) => {
     if (!file || !Number.isFinite(file.size) || file.size <= 0) {
         return { ok: false, message: '文件为空或不可读' }
@@ -717,10 +741,14 @@ const parseDyfFileInner = async ({
     }
     if (onMeta) onMeta(meta)
 
-    // 2) 资产帧：逐资产拼装 → sink 落盘 → 释放
+    // 2) 学生单元帧序：[学生 JSON][该生证据帧]… —— 每名学生的证据解密落盘后立刻处理该学生，
+    //    并把「已完成的学生数」上报给调用方（进度条平滑推进，不会停在 0/N）。
+    const assetsByStudent = manifest.students.map(() => [])
+    for (let idx = 0; idx < assets.length; idx++) assetsByStudent[assets[idx].s].push(idx)
     const writtenNames = new Map()
-    for (let ai = 0; ai < assets.length; ai++) {
-        const a = assets[ai]
+    let processedStudents = 0
+
+    const readAssetFrames = async (a, ai) => {
         const expectedFrames = Math.max(1, computeFrameCount(a.z, chunkSize))
         const chunks = []
         let received = 0
@@ -752,13 +780,13 @@ const parseDyfFileInner = async ({
             }
         }
         chunks.length = 0
-        if ((ai & 15) === 15) await new Promise((r) => setTimeout(r, 0))
     }
 
-    // 3) 学生帧
     for (let si = 0; si < manifest.students.length; si++) {
         const entry = manifest.students[si]
         if (!Number.isInteger(entry.n) || entry.n < 1) throw new Error('学生帧索引无效')
+
+        // 2a) 学生 JSON 帧
         const chunks = []
         let received = 0
         const expectedFrames = computeFrameCount(entry.n, chunkSize)
@@ -780,7 +808,17 @@ const parseDyfFileInner = async ({
         } catch {
             throw new Error('学生数据 JSON 解析失败')
         }
+
+        // 2b) 该生的证据帧 → 落盘
+        const own = assetsByStudent[si]
+        for (let n = 0; n < own.length; n++) {
+            await readAssetFrames(assets[own[n]], own[n])
+        }
+
+        // 2c) 还原引用并交给调用方（学生 + 其证据均完成）
         rewriteStudentRefs(student, writtenNames, assets)
+        processedStudents += 1
+        if (onStudentProgress) onStudentProgress(processedStudents, meta.count)
         const ret = await onStudent(student, meta)
         if (ret === false) {
             // 调用方提前停止（如预览）：跳过完整性尾检

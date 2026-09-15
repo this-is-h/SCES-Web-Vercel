@@ -126,6 +126,11 @@ const importDyf = async (file, progress) => {
         serverConfig,
         privateKeyJwk,
         evidenceSink,
+        onStudentProgress: (done, total) => {
+            // 帧序已按学生分组：每名学生（含其证据落盘）完成即推进一次进度
+            if (total > 0) progress?.setTotal?.(total)
+            progress?.advance?.(1)
+        },
         onMeta: (meta) => {
             if (meta.type !== 'student' && meta.type !== 'class' && meta.type !== 'grade') {
                 throw new Error('该文件不是可导入的材料类型')
@@ -136,7 +141,6 @@ const importDyf = async (file, progress) => {
             if (meta.type === 'student') {
                 const r = await importStudentObject({ student, semester })
                 details.push(r)
-                progress?.advance?.(1)
                 return
             }
             if (meta.semester && String(meta.semester) !== String(semester)) {
@@ -144,12 +148,10 @@ const importDyf = async (file, progress) => {
                     ok: false,
                     message: `整批材料学期为 ${meta.semester}，与当前学期 ${semester} 不一致`,
                 })
-                progress?.advance?.(1)
                 return
             }
             const r = await importStudentObject({ student, semester })
             details.push(r)
-            progress?.advance?.(1)
         },
     })
     if (!dyf.ok) return { ok: false, message: dyf.message }
