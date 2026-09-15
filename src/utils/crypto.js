@@ -138,21 +138,20 @@ export const aesGcmDecryptChunk = async ({ key, fixedIv, chunkIndex, ciphertextB
     return new Uint8Array(buf)
 }
 
-// 一次性加密（用于体量可控的 payload）。超过数 GB 的整班/整年级材料应使用 dyfFile.js 的流式容器。
+// 一次性加密/解密：与旧实现逐字节兼容（IV 原样使用、整段一次 AES-GCM），
+// 用于读取历史 v3 加密导出与学生端单份材料。多帧流式加密请走 chunk 接口。
 export const aesGcmEncrypt = async ({ keyBytes, plaintextBytes, iv }) => {
     const key = await importAesKey(keyBytes)
     const fixedIv = iv && iv.length === FIXED_IV_LENGTH ? iv : randomBytes(FIXED_IV_LENGTH)
-    const ciphertext = await aesGcmEncryptChunk({
-        key,
-        fixedIv,
-        chunkIndex: 0,
-        plaintextBytes,
-    })
-    return { iv: fixedIv, ciphertext }
+    const buf = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: fixedIv }, key, plaintextBytes)
+    return { iv: fixedIv, ciphertext: new Uint8Array(buf) }
 }
 
 export const aesGcmDecrypt = async ({ keyBytes, iv, ciphertextBytes }) => {
-    const key = await importAesKey(keyBytes)
+    const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'AES-GCM' }, false, [
+        'decrypt',
+    ])
     const fixedIv = iv instanceof Uint8Array ? iv : base64ToBytes(iv)
-    return aesGcmDecryptChunk({ key, fixedIv, chunkIndex: 0, ciphertextBytes })
+    const buf = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: fixedIv }, key, ciphertextBytes)
+    return new Uint8Array(buf)
 }

@@ -1,7 +1,14 @@
 // @vitest-environment node
 import { describe, it, expect, beforeAll } from 'vitest'
-import { generateRsaOaepKeyPair } from '@/utils/crypto'
-import { createDyfFileBlob, parseDyfFile } from '@/utils/dyfFile'
+import {
+    generateRsaOaepKeyPair,
+    importRsaPublicKey,
+    rsaEncrypt,
+    randomBytes,
+    utf8ToBytes,
+    bytesToBase64,
+} from '@/utils/crypto'
+import { createDyfFileBlob, parseDyfFile, createDyfText, parseDyfText } from '@/utils/dyfFile'
 
 const makeStudent = (i, withEvidence = false) => {
     const personal = {
@@ -235,6 +242,115 @@ describe('dyf v5 容器：完整性与防篡改', () => {
         })
         // 旧 inline 解析成功（体积很小）
         expect(res.ok).toBe(true)
+        expect(collected.length).toBe(1)
+    })
+})
+
+// 复刻“原始旧版”createDyfText 的加密方式：随机 IV 原样 + 整段一次 AES-GCM。
+const legacyEncryptDyf = async ({ type, payload, serverConfig }) => {
+    const enc = serverConfig.encryption
+    const publicKey = await importRsaPublicKey({ jwk: enc.rsaPublicKeyJwk, algorithm: enc.rsaAlgorithm })
+    const keyBytes = randomBytes(32)
+    const iv = randomBytes(12)
+    const aesKey = await crypto.subtle.importKey('raw', keyBytes, { name: 'AES-GCM' }, false, ['encrypt'])
+    const ct = new Uint8Array(
+        await crypto.subtle.encrypt(
+            { name: 'AES-GCM', iv },
+            aesKey,
+            utf8ToBytes(JSON.stringify(payload)),
+        ),
+    )
+    const ek = await rsaEncrypt({ publicKey, data: keyBytes })
+    return JSON.stringify({
+        schemaVersion: 3,
+        type,
+        encrypted: true,
+        alg: { rsa: enc.rsaAlgorithm, aes: { name: 'AES-GCM', length: 256 } },
+        iv: bytesToBase64(iv),
+        key: bytesToBase64(ek),
+        data: bytesToBase64(ct),
+    })
+}
+
+describe('dyf v3 旧文件兼容', () => {
+    it('原始旧版（随机 IV 整段 AES）加密的 v3 文件可被新解析器解密', async () => {
+        const { publicKeyJwk, privateKeyJwk } = await generateRsaOaepKeyPair({ modulusLength: 2048 })
+        const serverConfig = {
+            encryption: {
+                enabled: true,
+                rsaPublicKeyJwk: publicKeyJwk,
+                rsaAlgorithm: { name: 'RSA-OAEP', hash: 'SHA-256' },
+            },
+        }
+        const text = await legacyEncryptDyf({ type: 'student', payload: makeStudent(9), serverConfig })
+        const parsed = await parseDyfText({ text, serverConfig, privateKeyJwk })
+        expect(parsed.ok).toBe(true)
+        expect(parsed.type).toBe('student')
+        expect(parsed.payload.data.personal.姓名.data).toBe('学生9')
+    })
+
+    it('新 createDyfText 与 parseDyfText 自洽往返（加密）', async () => {
+        const { publicKeyJwk, privateKeyJwk } = await generateRsaOaepKeyPair({ modulusLength: 2048 })
+        const serverConfig = { encryption: { enabled: true, rsaPublicKeyJwk: publicKeyJwk } }
+        const text = await createDyfText({ type: 'student', payload: makeStudent(10), serverConfig })
+        const parsed = await parseDyfText({ text, serverConfig, privateKeyJwk })
+        expect(parsed.ok).toBe(true)
+        expect(parsed.payload.data.personal.姓名.data).toBe('学生10')
+    })
+
+    it('v3 明文文件仍可解析', async () => {
+        const text = JSON.stringify({
+            schemaVersion: 3,
+            type: 'student',
+            encrypted: false,
+            data: makeStudent(11),
+        })
+        const parsed = await parseDyfText({
+            text,
+            serverConfig: { encryption: { enabled: false } },
+            privateKeyJwk: null,
+        })
+        expect(parsed.ok).toBe(true)
+        expect(parsed.payload.data.personal.姓名.data).toBe('学生11')
+    })
+
+    it('旧版整班文件可经流式入口（File 回退）逐学生导入', async () => {
+        const { publicKeyJwk, privateKeyJwk } = await generateRsaOaepKeyPair({ modulusLength: 2048 })
+        const serverConfig = {
+            encryption: {
+                enabled: true,
+                rsaPublicKeyJwk: publicKeyJwk,
+                rsaAlgorithm: { name: 'RSA-OAEP', hash: 'SHA-256' },
+            },
+        }
+        const payload = {
+            semester: '2024秋季',
+            class: {},
+            students: [makeStudent(12), makeStudent(13)],
+        }
+        const text = await legacyEncryptDyf({ type: 'class', payload, serverConfig })
+        const collected = []
+        const res = await parseDyfFile({
+            file: new File([text], 'legacy.dyf'),
+            serverConfig,
+            privateKeyJwk,
+            onStudent: (s) => collected.push(s),
+        })
+        expect(res.ok).toBe(true)
+        expect(res.type).toBe('class')
+        expect(collected.length).toBe(2)
+    })
+
+    it('更早的裸学生 JSON（无 schemaVersion）仍可回退导入', async () => {
+        const collected = []
+        const res = await parseDyfFile({
+            file: new File([JSON.stringify(makeStudent(14))], 'raw.dyf'),
+            serverConfig: { encryption: { enabled: false } },
+            privateKeyJwk: null,
+            onStudent: (s) => collected.push(s),
+        })
+        expect(res.ok).toBe(true)
+        expect(res.type).toBe('student')
         expect(collected.length).toBe(1)
     })
 })

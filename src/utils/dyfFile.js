@@ -1,6 +1,8 @@
 import {
-    aesGcmDecryptChunk,
+    aesGcmDecrypt,
+    aesGcmEncrypt,
     aesGcmEncryptChunk,
+    aesGcmDecryptChunk,
     base64ToBytes,
     bytesToBase64,
     bytesToUtf8,
@@ -860,17 +862,10 @@ export const parseDyfText = async ({ text, serverConfig, privateKeyJwk }) => {
         try {
             const privateKey = await importRsaPrivateKey({ jwk: privateKeyJwk, algorithm })
             const keyBytes = await rsaDecrypt({ privateKey, data: base64ToBytes(parsed.key) })
-            const aesKey = await crypto.subtle.importKey(
-                'raw',
+            // 旧 v3 用随机 IV 整段加密（IV 原样）；必须用 aesGcmDecrypt 逐字节兼容。
+            const plaintextBytes = await aesGcmDecrypt({
                 keyBytes,
-                { name: 'AES-GCM' },
-                false,
-                ['decrypt'],
-            )
-            const plaintextBytes = await aesGcmDecryptChunk({
-                key: aesKey,
-                fixedIv: base64ToBytes(parsed.iv),
-                chunkIndex: 0,
+                iv: base64ToBytes(parsed.iv),
                 ciphertextBytes: base64ToBytes(parsed.data),
             })
             const payload = safeJsonParse(bytesToUtf8(plaintextBytes))
@@ -927,16 +922,8 @@ export const createDyfText = async ({ type, payload, serverConfig }) => {
         algorithm: encryption.rsaAlgorithm,
     })
     const keyBytes = randomBytes(32)
-    const fixedIv = randomBytes(12)
-    const aesKey = await crypto.subtle.importKey('raw', keyBytes, { name: 'AES-GCM' }, false, [
-        'encrypt',
-    ])
-    const ciphertext = await aesGcmEncryptChunk({
-        key: aesKey,
-        fixedIv,
-        chunkIndex: 0,
-        plaintextBytes,
-    })
+    // v3 与旧实现逐字节兼容：随机 IV 原样用于整段 AES-GCM。
+    const { iv: fixedIv, ciphertext } = await aesGcmEncrypt({ keyBytes, plaintextBytes })
     return JSON.stringify({
         schemaVersion: DYF_SCHEMA_VERSION,
         type,
