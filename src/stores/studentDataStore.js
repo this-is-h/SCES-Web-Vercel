@@ -958,6 +958,7 @@ export const useStudentDataStore = defineStore('studentData', () => {
     return {
         studentsFor,
         isLoadingFor,
+        loadStudents,
         loadErrorFor,
         clearAll,
         isStudentDeleted,
