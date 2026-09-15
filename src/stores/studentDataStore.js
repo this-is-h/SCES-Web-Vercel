@@ -678,9 +678,12 @@ export const useStudentDataStore = defineStore('studentData', () => {
             standardClassInfo = await getStandardClassInfo({ scope })
         } catch {}
         const deletedSet = await readDeletedStudentIds({ scope, semester: sem })
-        const existing = await loadStudents({ scope, semester: sem, silent: true })
+        // loadStudents 不返回数组，只刷新 bucket；索引必须从 bucket.students 取。
+        await loadStudents({ scope, semester: sem, silent: true })
+        const existingBucket = ensureBucket({ scope, semester: sem })
+        const existing = existingBucket?.students || []
         const existingByStudentId = new Map()
-        for (const row of existing || []) {
+        for (const row of existing) {
             const { name, id } = getStudentIdentity(row) || {}
             if (!name || !id) continue
             const sid = String(id)
