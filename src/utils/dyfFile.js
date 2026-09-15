@@ -48,8 +48,10 @@ const KIND_MANIFEST = 0
 const KIND_ASSET = 1
 const KIND_STUDENT = 2
 
-// 旧版（v3 inline / 裸 JSON）体积硬上限：整文件必须能装进一个 JS 字符串（V8 ≈536MB）。
-const LEGACY_INLINE_MAX_BYTES = 400 * 1024 * 1024
+// 旧版（v3 inline / 裸 JSON）体积硬上限：file.text() 受 V8 字符串上限约束
+//（2^29-24 ≈ 512M 字符，纯 ASCII JSON 文本≈字节）。旧版导出本身也在明文 ≈380MB 时
+// 于 JSON.stringify 阶段崩溃，因此旧版能成功导出的文件不超过 ~500MB——取 496MiB 为物理极限。
+const LEGACY_INLINE_MAX_BYTES = 496 * 1024 * 1024
 
 // ---- 小工具 ----
 
@@ -599,7 +601,14 @@ const parseDyfFileInner = async ({
     const magic = await readAt(file, 0, 8)
     const magicText = String.fromCharCode(...magic.subarray(0, 7))
     if (magicText !== DYF_MAGIC || magic[7] > DYF_FORMAT_VERSION) {
-        return await parseLegacyInline({ file, serverConfig, privateKeyJwk, onStudent, onMeta })
+        return await parseLegacyInline({
+            file,
+            serverConfig,
+            privateKeyJwk,
+            onStudent,
+            onMeta,
+            onStudentProgress,
+        })
     }
     const formatVersion = magic[7]
     if (formatVersion < DYF_FORMAT_VERSION) {
@@ -981,32 +990,46 @@ export const createDyfText = async ({ type, payload, serverConfig }) => {
     })
 }
 
-const parseLegacyInline = async ({ file, serverConfig, privateKeyJwk, onStudent, onMeta }) => {
+const parseLegacyInline = async ({
+    file,
+    serverConfig,
+    privateKeyJwk,
+    onStudent,
+    onMeta,
+    onStudentProgress,
+}) => {
     if (file.size > LEGACY_INLINE_MAX_BYTES) {
+        // 区分“管理端二进制容器”与“旧版文本超大文件”，给出对应指引
         return {
             ok: false,
             message:
-                '该旧版文件过大（旧格式无法流式解析）。请用新版重新导出；旧版超大文件仅支持管理端导入。',
+                '该文件超过旧版文本格式物理上限（约 496 MB）。旧版文本格式无法流式解析；请在导出版本用新版重新导出为流式容器（.dyf v6），或改用管理端导入。',
         }
     }
     const text = await file.text()
     const legacy = await parseDyfText({ text, serverConfig, privateKeyJwk })
     if (!legacy.ok) return { ok: false, message: legacy.message }
     const payload = legacy.payload
-    if (legacy.type === 'class') {
+    if (legacy.type === 'class' || legacy.type === 'grade') {
         const stuList = Array.isArray(payload?.students) ? payload.students : []
         const meta = {
-            type: 'class',
+            type: legacy.type,
             semester: payload?.semester ?? null,
             classInfo: payload?.class ?? null,
             count: stuList.length,
         }
         if (onMeta) onMeta(meta)
-        for (const s of stuList) await onStudent(s, meta)
-        return { ok: true, type: 'class', count: stuList.length }
+        let done = 0
+        for (const s of stuList) {
+            await onStudent(s, meta)
+            done += 1
+            if (onStudentProgress) onStudentProgress(done, stuList.length)
+        }
+        return { ok: true, type: legacy.type, count: stuList.length }
     }
     const meta = { type: 'student', semester: null, classInfo: null, count: 1 }
     if (onMeta) onMeta(meta)
     await onStudent(payload, meta)
+    if (onStudentProgress) onStudentProgress(1, 1)
     return { ok: true, type: 'student', count: 1 }
 }
