@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onMounted, provide, ref, watch } from 'vue'
-import { fileSystemManager } from '@/utils/FileSystemManager'
+import { useStudentDataStore } from '@/stores/studentDataStore'
 import {
     ensureLocalConfig,
     getServerConfig,
@@ -308,12 +308,16 @@ const authorizeFolder = async () => {
     }
 }
 
+const studentStore = useStudentDataStore()
+
 const changeFolder = async () => {
     try {
         const handle = await fileSystemManager.authorize(true)
         directoryHandle.value = handle
         directoryName.value = handle.name
         isAuthorized.value = true
+        // 切目录后立即清空内存缓存，避免显示旧目录数据
+        studentStore.clearAll()
         await loadSemesters()
         await checkKeyGate()
     } catch (e) {

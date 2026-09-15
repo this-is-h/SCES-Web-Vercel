@@ -96,6 +96,13 @@ export const useStudentDataStore = defineStore('studentData', () => {
     const migrationNoticeCounts = ref(new Map())
     const migrationRunning = ref(new Map())
 
+    // 切换数据目录后清空所有内存缓存，强制重新从新目录读取。
+    const clearAll = () => {
+        buckets.value.clear()
+        runIds.value.clear()
+        migrationNoticeCounts.value.clear()
+        migrationRunning.value.clear()
+    }
     const getStandardClassInfo = async ({ scope }) => {
         if (normalizeScope(scope) !== 'class') return null
         const config = await ensureLocalConfig({ scope: 'class' })
@@ -652,6 +659,133 @@ export const useStudentDataStore = defineStore('studentData', () => {
         return { ok: true, message: '导入成功', name, id, savedNow: true }
     }
 
+    // 批量导入：把 addStudent 里逐学生重复的全目录扫描（O(N²) 磁盘 IO）改成一次性预取，
+    // 内存中以 Map 索引已存在的学号/姓名/锁定状态、一次性读 deleted set，
+    // 证据落盘交给 dyfFile 的 evidenceSink（不在此处重复 normalize）。
+    // 仅做"新增/覆盖同一学号"的快速路径；发现真正的学号冲突（同号异名/已有锁定）仍逐个上报。
+    const addStudentsBatch = async ({ scope, semester, students }) => {
+        const sem = normalizeSemesterValue(semester)
+        if (!sem) return []
+        if (isMigratingFor({ scope, semester: sem })) return []
+
+        const scopeKey = normalizeScope(scope)
+        const list = Array.isArray(students) ? students : []
+        if (!list.length) return []
+
+        // 1) 一次性预取 classInfo / deleted set / 已有学生索引
+        let standardClassInfo = null
+        try {
+            standardClassInfo = await getStandardClassInfo({ scope })
+        } catch {}
+        const deletedSet = await readDeletedStudentIds({ scope, semester: sem })
+        const existing = await loadStudents({ scope, semester: sem, silent: true })
+        const existingByStudentId = new Map()
+        for (const row of existing || []) {
+            const { name, id } = getStudentIdentity(row) || {}
+            if (!name || !id) continue
+            const sid = String(id)
+            if (!existingByStudentId.has(sid))
+                existingByStudentId.set(sid, {
+                    name: String(name),
+                    locked: isStudentIdConflictLocked(row),
+                    student: row,
+                })
+        }
+
+        const results = []
+        const batchAdded = []
+        for (const student of list) {
+            normalizeDyfKeys(student)
+            const { name, id } = getStudentIdentity(student) || {}
+            if (!name || !id) {
+                results.push({ ok: false, message: '导入文件缺少学生信息（姓名/学号）', name, id })
+                continue
+            }
+            const studentId = String(id)
+            const fileSemester = getStudentSemester(student)
+            if (!fileSemester) {
+                results.push({ ok: false, message: '导入文件缺少学期信息（年份/学期）', name, id })
+                continue
+            }
+            if (String(fileSemester) !== String(sem)) {
+                results.push({
+                    ok: false,
+                    message: `导入文件学期为 ${fileSemester}，与当前学期 ${sem} 不一致`,
+                    name,
+                    id,
+                })
+                continue
+            }
+            if (standardClassInfo) {
+                setStudentClassInfo({ student, classInfo: standardClassInfo })
+                const check = validateStudentBelongsToClass({
+                    student,
+                    classInfo: standardClassInfo,
+                })
+                if (!check?.ok) {
+                    results.push({
+                        ok: false,
+                        message: check?.message || '非本班学生，已拒绝导入',
+                        name,
+                        id,
+                    })
+                    continue
+                }
+            }
+            // 冲突快速路径：用内存索引判断
+            const existingRow = existingByStudentId.get(studentId)
+            if (existingRow?.locked && String(existingRow.name) !== String(name)) {
+                results.push({
+                    ok: false,
+                    status: 'locked',
+                    message: `学号 ${studentId} 已固定为 ${existingRow.name || '指定学生'}，不允许导入其他姓名`,
+                    name,
+                    id,
+                })
+                continue
+            }
+            // 同号异名：回退到单学生 addStudent 走完整冲突流程（逐个上报，不批量覆盖）
+            if (existingRow && String(existingRow.name) !== String(name)) {
+                const r = await addStudent({ scope, semester: sem, student })
+                results.push(r)
+                continue
+            }
+            setStudentIdConflictLock({ student, locked: false })
+            try {
+                await writeStudentToDisk({ scope: scopeKey, semester: sem, student })
+            } catch (e) {
+                results.push({ ok: false, message: e?.message || '写入失败', name, id })
+                continue
+            }
+            deletedSet.delete(studentId)
+            existingByStudentId.set(studentId, { name: String(name), locked: false, student })
+            batchAdded.push({ student, studentId })
+            results.push({ ok: true, message: '导入成功', name, id, savedNow: true })
+        }
+
+        // 2) 批量更新 deleted set + 内存 bucket（一次排序而非 N 次）
+        try {
+            await writeDeletedStudentIds({ scope, semester: sem, ids: deletedSet })
+        } catch {}
+        if (batchAdded.length) {
+            const bucket = ensureBucket({ scope, semester: sem })
+            const current = bucket?.students ? bucket.students.slice() : []
+            const idxById = new Map()
+            for (let i = 0; i < current.length; i++)
+                idxById.set(String(getStudentIdentity(current[i])?.id || ''), i)
+            for (const { student, studentId } of batchAdded) {
+                const idx = idxById.get(studentId)
+                if (idx != null) current[idx] = student
+                else {
+                    current.push(student)
+                    idxById.set(studentId, current.length - 1)
+                }
+            }
+            if (bucket) bucket.students = sortByStudentId(current)
+        }
+        return results
+    }
+
     const resolveStudentIdConflict = async ({
         scope,
         semester,
@@ -825,10 +959,11 @@ export const useStudentDataStore = defineStore('studentData', () => {
         studentsFor,
         isLoadingFor,
         loadErrorFor,
-        loadStudents,
+        clearAll,
         isStudentDeleted,
         restoreStudentFromLocalById,
         addStudent,
+        addStudentsBatch,
         resolveStudentIdConflict,
         updateStudent,
         removeStudent,

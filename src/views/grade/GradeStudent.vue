@@ -121,26 +121,59 @@ const importDyf = async (file, progress) => {
     const evidenceSink = buildEvidenceSink()
 
     const details = []
+    const pending = []
+    const BATCH_SIZE = 32
+    let isBatch = false
+    let batchSkipped = false
+
+    const flushBatch = async () => {
+        if (!pending.length) return
+        const batch = pending.splice(0, pending.length)
+        try {
+            const results = await store.addStudentsBatch({
+                scope: 'grade',
+                semester,
+                students: batch.map((b) => b.student),
+            })
+            for (let i = 0; i < batch.length; i++) {
+                details.push({
+                    ...(results[i] || { ok: false, message: '批量导入异常' }),
+                    name: batch[i].name,
+                    id: batch[i].id,
+                })
+            }
+        } catch (e) {
+            for (const b of batch) {
+                details.push({
+                    ok: false,
+                    message: e?.message || '批量导入失败',
+                    name: b.name,
+                    id: b.id,
+                })
+            }
+        }
+    }
+
     const dyf = await parseDyfFile({
         file,
         serverConfig,
         privateKeyJwk,
         evidenceSink,
         onStudentProgress: (done, total) => {
-            // 帧序已按学生分组：每名学生（含其证据落盘）完成即推进一次进度
             if (total > 0) progress?.setTotal?.(total)
-            progress?.advance?.(1)
         },
         onMeta: (meta) => {
             if (meta.type !== 'student' && meta.type !== 'class' && meta.type !== 'grade') {
                 throw new Error('该文件不是可导入的材料类型')
             }
+            isBatch = meta.type === 'class' || meta.type === 'grade'
             progress?.setTotal?.(meta.type === 'student' ? 1 : meta.count || 1)
         },
         onStudent: async (student, meta) => {
             if (meta.type === 'student') {
                 const r = await importStudentObject({ student, semester })
                 details.push(r)
+                progress?.advance?.(1)
                 return
             }
             if (meta.semester && String(meta.semester) !== String(semester)) {
@@ -148,13 +181,27 @@ const importDyf = async (file, progress) => {
                     ok: false,
                     message: `整批材料学期为 ${meta.semester}，与当前学期 ${semester} 不一致`,
                 })
+                progress?.advance?.(1)
                 return
             }
-            const r = await importStudentObject({ student, semester })
-            details.push(r)
+            // 批量：累积到 pending，满 BATCH_SIZE 即批量写盘（O(1) 索引而非逐个扫目录）
+            const { name, id } = getStudentIdentity(student) || {}
+            pending.push({ student, name: String(name || ''), id: String(id || '') })
+            if (pending.length >= BATCH_SIZE) {
+                batchSkipped = true
+                await flushBatch()
+            }
+            progress?.advance?.(1)
         },
     })
     if (!dyf.ok) return { ok: false, message: dyf.message }
+
+    // 冲突文件回退到逐个导入（addStudentsBatch 内部也会对同号异名回退）
+    if (batchSkipped || pending.length) await flushBatch()
+    if (!isBatch && !details.length) {
+        // 空文件兜底
+        return { ok: true, message: '文件中未找到学生数据', details: [] }
+    }
     const okCount = details.filter((d) => d.ok).length
     const failCount = details.length - okCount
     return {
