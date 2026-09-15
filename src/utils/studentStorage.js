@@ -556,7 +556,7 @@ const streamFileToDataUrl = async (file) => {
     return `data:${mime};base64,${parts.join('')}`
 }
 
-const getUniqueFileName = async (dirPath, fileName) => {
+export const getUniqueFileName = async (dirPath, fileName) => {
     const cleaned = sanitizeFileName(fileName)
     const dotIndex = cleaned.lastIndexOf('.')
     const baseName = dotIndex > 0 ? cleaned.slice(0, dotIndex) : cleaned

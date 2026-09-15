@@ -14,8 +14,13 @@ import {
     utf8ToBytes,
 } from '@/utils/crypto'
 import { safeJsonParse } from '@/utils/json'
+import {
+    getStudentFolderName,
+    getStudentDir,
+    scopePath,
+    getUniqueFileName,
+} from '@/utils/studentStorage'
 import { fileSystemManager } from '@/utils/FileSystemManager'
-import { getStudentFolderName, getStudentDir, scopePath } from '@/utils/studentStorage'
 
 export const DYF_SCHEMA_VERSION = 5
 export const DYF_MAGIC = 'SCESDYF'
@@ -237,8 +242,10 @@ export const makeImportEvidenceSink = ({ scope, semester }) => {
         if (!folderKey || !name) return null
         try {
             const dir = scopePath(scope, `semesters/${semester}/students/${folderKey}/evidence`)
-            await fileSystemManager.writeFile(`${dir}/${name}`, blob)
-            return name
+            // 与旧 normalizeEvidenceFiles 一致：重名不覆盖，落唯一名并回传供 ref 还原。
+            const unique = await getUniqueFileName(dir, name)
+            await fileSystemManager.writeFile(`${dir}/${unique}`, blob)
+            return unique
         } catch {
             return null
         }
@@ -894,8 +901,8 @@ export const parseDyfText = async ({ text, serverConfig, privateKeyJwk }) => {
  * 生成 v3 单块 JSON 文本（学生端个人材料导出专用）。
  *
  * 班级/年级等批量材料一律使用 createDyfFileBlob 的流式容器；本函数仅保留给学生端单份材料
- * （体量可控），并采用与 v5 相同的流式安全原语（bytesToBase64 / 分块 AES-GCM），
- * 因此不再受旧实现 32 位 base64 长度上限与整段 spread 栈溢出影响。
+ * （体量可控）。信封与密钥协商与旧版逐字节兼容（随机 IV 原样、整段一次 AES-GCM），
+ * base64 采用流式安全实现，不再受整段 spread 栈溢出影响。
  */
 export const createDyfText = async ({ type, payload, serverConfig }) => {
     const cfg = serverConfig ?? {}
@@ -909,7 +916,7 @@ export const createDyfText = async ({ type, payload, serverConfig }) => {
 
     if (!enabled) {
         return JSON.stringify({
-            schemaVersion: DYF_SCHEMA_VERSION,
+            schemaVersion: 3,
             type,
             encrypted: false,
             createdAt: Date.now(),
@@ -925,7 +932,7 @@ export const createDyfText = async ({ type, payload, serverConfig }) => {
     // v3 与旧实现逐字节兼容：随机 IV 原样用于整段 AES-GCM。
     const { iv: fixedIv, ciphertext } = await aesGcmEncrypt({ keyBytes, plaintextBytes })
     return JSON.stringify({
-        schemaVersion: DYF_SCHEMA_VERSION,
+        schemaVersion: 3,
         type,
         encrypted: true,
         createdAt: Date.now(),
