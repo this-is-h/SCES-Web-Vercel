@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onMounted, provide, ref, watch } from 'vue'
+import { fileSystemManager } from '@/utils/FileSystemManager'
 import { useStudentDataStore } from '@/stores/studentDataStore'
 import {
     ensureLocalConfig,
