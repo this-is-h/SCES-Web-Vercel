@@ -510,7 +510,7 @@ export const buildStudentExportPayload = (student) => {
 }
 
 const dataUrlToBlob = (dataUrl) => {
-    const dataUrlMatch = String(dataUrl).match(/^data:([^;]+);base64,(.+)$/)
+    const dataUrlMatch = String(dataUrl).match(/^data:([^;]+);base64,(.*)$/)
     if (!dataUrlMatch) return null
     const mimeType = dataUrlMatch[1]
     const base64Payload = dataUrlMatch[2]
@@ -533,7 +533,7 @@ const extFromMime = (mime) => {
 const streamFileToDataUrl = async (file) => {
     if (!file || typeof file.arrayBuffer !== 'function') return null
     const mime = file.type || 'application/octet-stream'
-    const CHUNK = 1024 * 1024
+    const CHUNK = 3 * Math.floor((1024 * 1024) / 3)
     const size = file.size || 0
     let offset = 0
     let acc = ''
