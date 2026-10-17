@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, provide, ref, watch } from 'vue'
 import { ensureLocalConfig, getServerConfig } from '@/utils/config'
-import { parseDyfText } from '@/utils/dyfFile'
+import { parseDyfFile, makeImportEvidenceSink } from '@/utils/dyfFile'
 import { createAppToast } from '@/utils/toast'
 import {
     getStudentIdentity,
@@ -11,7 +11,6 @@ import {
     normalizeSemesterValue,
 } from '@/utils/studentStorage'
 import { useStudentDataStore } from '@/stores/studentDataStore'
-
 const currentSemester = inject('currentSemester', ref(''))
 const fsAuthorized = inject('fsAuthorized', ref(false))
 const toast = useToast()
@@ -84,66 +83,132 @@ const importStudentObject = async ({ student, semester }) => {
     return { ...(r || {}), status: r?.ok ? 'success' : 'error' }
 }
 
-const importStudent = async (text) => {
+const buildEvidenceSink = () =>
+    makeImportEvidenceSink({ scope: 'grade', semester: normalizedSemester.value })
+const importStudent = async (file) => {
     const semester = normalizedSemester.value
     if (!semester) return { ok: false, message: '当前学期无效' }
 
     const serverConfig = await getServerConfig()
     const localConfig = await ensureLocalConfig({ scope: 'grade' })
     const privateKeyJwk = localConfig?.encryption?.privateKeyJwk
+    const evidenceSink = buildEvidenceSink()
 
-    const dyf = await parseDyfText({ text, serverConfig, privateKeyJwk })
+    const dyf = await parseDyfFile({
+        file,
+        serverConfig,
+        privateKeyJwk,
+        evidenceSink,
+        onMeta: (meta) => {
+            if (meta.type !== 'student') throw new Error('该文件不是个人材料，无法作为学生导入')
+        },
+        onStudent: async (student) => {
+            const r = await importStudentObject({ student, semester })
+            if (!r?.ok) throw new Error(r?.message || '导入失败')
+        },
+    })
     if (!dyf.ok) return { ok: false, message: dyf.message }
-    if (dyf.type !== 'student')
-        return { ok: false, message: '该文件不是个人材料，无法作为学生导入' }
-
-    return await importStudentObject({ student: dyf.payload, semester })
+    return { ok: true, status: 'success' }
 }
 
-const importDyf = async (text, progress) => {
+const importDyf = async (file, progress) => {
     const semester = normalizedSemester.value
     if (!semester) return { ok: false, message: '当前学期无效' }
 
     const serverConfig = await getServerConfig()
     const localConfig = await ensureLocalConfig({ scope: 'grade' })
     const privateKeyJwk = localConfig?.encryption?.privateKeyJwk
+    const evidenceSink = buildEvidenceSink()
 
-    const dyf = await parseDyfText({ text, serverConfig, privateKeyJwk })
-    if (!dyf.ok) return { ok: false, message: dyf.message }
+    const details = []
+    const pending = []
+    const BATCH_SIZE = 32
+    let isBatch = false
+    let batchSkipped = false
 
-    if (dyf.type === 'student') {
-        const r = await importStudentObject({ student: dyf.payload, semester })
-        progress?.setTotal?.(1)
-        progress?.advance?.(1)
-        return { ok: r.ok, message: r.message, details: [r] }
-    }
-
-    if (dyf.type === 'class') {
-        const payloadSemester = dyf.payload?.semester
-        if (!payloadSemester) return { ok: false, message: '整班材料缺少 semester 字段' }
-        if (String(payloadSemester) !== String(semester)) {
-            return {
-                ok: false,
-                message: `整班材料学期为 ${payloadSemester}，与当前学期 ${semester} 不一致`,
+    const flushBatch = async () => {
+        if (!pending.length) return
+        const batch = pending.splice(0, pending.length)
+        try {
+            const results = await store.addStudentsBatch({
+                scope: 'grade',
+                semester,
+                students: batch.map((b) => b.student),
+            })
+            for (let i = 0; i < batch.length; i++) {
+                details.push({
+                    ...(results[i] || { ok: false, message: '批量导入异常' }),
+                    name: batch[i].name,
+                    id: batch[i].id,
+                })
+            }
+        } catch (e) {
+            for (const b of batch) {
+                details.push({
+                    ok: false,
+                    message: e?.message || '批量导入失败',
+                    name: b.name,
+                    id: b.id,
+                })
             }
         }
-        const stuList = Array.isArray(dyf.payload?.students) ? dyf.payload.students : []
-        progress?.setTotal?.(stuList.length || 1)
-        const details = []
-        for (const s of stuList) {
-            details.push(await importStudentObject({ student: s, semester }))
-            progress?.advance?.(1)
-        }
-        const okCount = details.filter((d) => d.ok).length
-        const failCount = details.length - okCount
-        return {
-            ok: failCount === 0,
-            message: `整班导入完成：成功 ${okCount}，失败/跳过 ${failCount}`,
-            details,
-        }
     }
 
-    return { ok: false, message: '无法识别的导入类型' }
+    const dyf = await parseDyfFile({
+        file,
+        serverConfig,
+        privateKeyJwk,
+        evidenceSink,
+        onStudentProgress: (done, total) => {
+            if (total > 0) progress?.setTotal?.(total)
+        },
+        onMeta: (meta) => {
+            if (meta.type !== 'student' && meta.type !== 'class' && meta.type !== 'grade') {
+                throw new Error('该文件不是可导入的材料类型')
+            }
+            isBatch = meta.type === 'class' || meta.type === 'grade'
+            progress?.setTotal?.(meta.type === 'student' ? 1 : meta.count || 1)
+        },
+        onStudent: async (student, meta) => {
+            if (meta.type === 'student') {
+                const r = await importStudentObject({ student, semester })
+                details.push(r)
+                progress?.advance?.(1)
+                return
+            }
+            if (meta.semester && String(meta.semester) !== String(semester)) {
+                details.push({
+                    ok: false,
+                    message: `整批材料学期为 ${meta.semester}，与当前学期 ${semester} 不一致`,
+                })
+                progress?.advance?.(1)
+                return
+            }
+            // 批量：累积到 pending，满 BATCH_SIZE 即批量写盘（O(1) 索引而非逐个扫目录）
+            const { name, id } = getStudentIdentity(student) || {}
+            pending.push({ student, name: String(name || ''), id: String(id || '') })
+            if (pending.length >= BATCH_SIZE) {
+                batchSkipped = true
+                await flushBatch()
+            }
+            progress?.advance?.(1)
+        },
+    })
+    if (!dyf.ok) return { ok: false, message: dyf.message }
+
+    // 冲突文件回退到逐个导入（addStudentsBatch 内部也会对同号异名回退）
+    if (batchSkipped || pending.length) await flushBatch()
+    if (!isBatch && !details.length) {
+        // 空文件兜底
+        return { ok: true, message: '文件中未找到学生数据', details: [] }
+    }
+    const okCount = details.filter((d) => d.ok).length
+    const failCount = details.length - okCount
+    return {
+        ok: failCount === 0,
+        message: `整批导入完成：成功 ${okCount}，失败/跳过 ${failCount}`,
+        details,
+    }
 }
 
 const updateStudent = async (student) => {

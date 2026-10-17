@@ -2,6 +2,7 @@
 import { computed, ref, onMounted, provide, watch } from 'vue'
 import Cascader from '@/components/ClassCascader.vue'
 import { fileSystemManager } from '@/utils/FileSystemManager'
+import { useStudentDataStore } from '@/stores/studentDataStore'
 import * as z from 'zod'
 import {
     ensureLocalConfig,
@@ -20,6 +21,7 @@ const debug = (...args) => {
 }
 
 const toast = useToast()
+const studentStore = useStudentDataStore()
 const appToast = createAppToast(toast)
 
 const isSupported = ref(true)
@@ -259,7 +261,7 @@ const changeFolder = async () => {
         directoryHandle.value = handle
         directoryName.value = handle.name
         isAuthorized.value = true
-        debug('changeFolder', directoryName.value)
+        studentStore.clearAll()
         const semesterTree = ref(
             await fileSystemManager.readDirectoryStructure('class/semesters', 1),
         )

@@ -11,7 +11,7 @@
 | `feature/*` / `bugfix/*` / `chore/*` | 短期     | 功能 / 缺陷 / 杂务，从 develop 创建，完成后 PR 合并回 develop                                     |
 | `hotfix/*`                           | 短期     | 紧急修复，从 main 创建，完成后合并回 main 与 develop                                              |
 
-规则：分支名必须符合前缀（CI 拒绝违规分支）；`develop`/`main` 开启保护（强制 PR + 状态检查；`main` 禁止直推）。
+规则：CI 校验 PR 源分支和 push 当前分支；仓库管理员须为 `develop`/`main` 配置保护（强制 PR + 必需状态检查；`main` 禁止直推），workflow 不会自动开启远端保护。
 
 ## 提交规范（commit-msg 钩子强制）
 
@@ -28,14 +28,15 @@
 ## 钩子与 CI 门禁
 
 - `pre-commit`：`lint-staged`（eslint --fix + prettier --write 暂存文件）+ `pnpm type-check`；`commit-msg`：commitlint。
-- CI：编译门禁（`pnpm build`）+ Lint + 测试（vitest）+ `pnpm audit`（high 阻断）+ gitleaks + 分支名校验。
-- 覆盖率门禁：现有测试基线（excelFlow 等）纳入后按团队基线补 vitest 覆盖率 ≥80%（与 SCES-Shared 一致）。
+- CI：`pnpm build`（含类型检查）+ `pnpm lint` + `pnpm test:unit run` + `pnpm audit --prod --audit-level high` + gitleaks + 分支名校验。
+- `pnpm lint` 只读检查源码；自动修复仅由显式命令或暂存文件钩子执行。CI 测试必须实际运行，不因没有测试文件而跳过。
+- 现有回归覆盖 `.dyf` 容器与附件存储。`pnpm test:coverage` 生成报告，但 `vitest.config.ts` 未配置覆盖率阈值；不宣称全仓或 Excel 公式已有 ≥80% 门禁。
 
 ## 部署
 
 - **Vercel git 集成绑定本仓库 `main`**：合并到 main 自动生产部署；PR 自动预览部署；
-- `public/updates/latest.json` 由 `SCES-Management-Desktop-Electron` 的 release CI **跨仓推送**到本仓库 main（自动化，勿手改）；
-- `public/download.html` 指向 SCES-Management-Desktop-Electron 的 GitHub Release 安装包（版本带 `profileId`）。
+- 桌面端更新清单由 `SCES-Server-Vercel/public/updates/latest.json` 托管；桌面发布 CI 向服务端 `develop` 创建 PR，不再向本仓 main 推送清单。
+- 正式安装包位于公开仓库 [SCES-Management-Desktop-Releases](https://github.com/this-is-h/SCES-Management-Desktop-Releases/releases)。本仓 `public/download.html` 仍按旧源码仓路径拼接下载链接，尚未适配当前发布链路，不能作为正式下载入口。
 
 ## 维护约定
 
