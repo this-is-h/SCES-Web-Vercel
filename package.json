@@ -20,7 +20,7 @@
         "export:grade": "node ./src/utils/excel/runner.js grade",
         "build-only": "vite build",
         "type-check": "vue-tsc --build",
-        "lint": "eslint . --fix --cache",
+        "lint": "eslint . --cache",
         "format": "prettier --write --experimental-cli src/"
     },
     "docs": {
