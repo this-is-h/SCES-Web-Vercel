@@ -12,11 +12,12 @@ jobs:
     branch-name:
         name: 分支名校验（简化版 Git Flow）
         runs-on: ubuntu-latest
-        if: github.event_name == 'push'
         steps:
             - name: 校验分支前缀
+              env:
+                  BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
               run: |
-                  ref="${{ github.ref_name }}"
+                  ref="$BRANCH_NAME"
                   case "$ref" in
                     main|develop|feature/*|bugfix/*|hotfix/*|chore/*|release/*)
                       ;;
@@ -45,8 +46,6 @@ jobs:
               run: pnpm lint
 
     unit-tests:
-        # 仓库暂未建立测试基线（原测试文件被旧 *.test.js gitignore 吞掉且工作树已无）。
-        # 首个测试文件落地后本门禁自动生效（按 Conventional Commits 推进覆盖率 ≥80%）。
         name: 单元测试
         runs-on: ubuntu-latest
         steps:
@@ -59,13 +58,8 @@ jobs:
                   node-version: 22
                   cache: pnpm
             - run: pnpm install --frozen-lockfile
-            - name: 单元测试门禁（无测试文件时自动跳过）
-              run: |
-                  if [ -n "$(find . -path ./node_modules -prune -o \( -name '*.test.*' -o -name '*.spec.*' \) -print 2>/dev/null | head -1)" ]; then
-                    pnpm test:unit run
-                  else
-                    echo "::notice::未检出测试文件，跳过单元测试"
-                  fi
+            - name: 单元测试门禁
+              run: pnpm test:unit run
 
     supply-chain-audit:
         name: 供应链安全检查

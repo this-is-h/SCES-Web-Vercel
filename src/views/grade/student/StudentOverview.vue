@@ -13,8 +13,7 @@ import {
 import { getServerConfig, getStudentConfig } from '@/utils/config'
 import { exportStudentScoresXlsx } from '@/utils/excel'
 import { importStudentsFromFiles } from '@/utils/importStudentsFromFiles'
-import { createDyfText } from '@/utils/dyfFile'
-import { embedEvidenceFilesForExport } from '@/utils/studentStorage'
+import { createDyfFileBlob } from '@/utils/dyfFile'
 import { saveAs } from 'file-saver'
 import { useStudentDeleteStore } from '@/stores/studentDeleteStore'
 import { useCurrentStudentStore } from '@/stores/currentStudentStore'
@@ -263,30 +262,31 @@ const exportGradeMaterial = async () => {
             matchesKeywordStudent(s, filterInfo.keyword),
         )
         if (!list.length) throw new Error('当前筛选条件下没有可导出的学生')
-        materialExportProgress.value = { done: 0, total: list.length }
-        const packedStudents = []
-        for (const s of list) {
-            const embedded = await embedEvidenceFilesForExport({
-                scope: 'grade',
-                semester,
-                student: s,
-            })
-            packedStudents.push(embedded)
-            materialExportProgress.value = { done: packedStudents.length, total: list.length }
-        }
 
         const serverConfig = await getServerConfig()
         const encryptionReady = Boolean(
             serverConfig?.encryption?.enabled && serverConfig?.encryption?.rsaPublicKeyJwk,
         )
         if (!encryptionReady) throw new Error('服务器未配置公钥或未启用加密，无法导出')
-        const payload = { semester, class: filterInfo, students: packedStudents }
-        const text = await createDyfText({ type: 'class', payload, serverConfig })
+
+        // 流式导出：证据从磁盘逐块读取、序列化/加密逐学生进行，整年级数据不再一次性物化。
+        materialExportProgress.value = { done: 0, total: list.length }
+        const blob = await createDyfFileBlob({
+            type: 'grade',
+            semester,
+            classInfo: filterInfo,
+            students: list,
+            serverConfig,
+            onProgress: (p) => {
+                if (p.stage === 'collect')
+                    materialExportProgress.value = { done: p.done, total: p.total }
+            },
+        })
 
         const fileName = sanitizeFileName(
             `${filterInfo.grade}-${filterInfo.major}-${filterInfo.class}_${semester}_年级材料.dyf`,
         )
-        saveAs(new Blob([text], { type: 'application/json' }), fileName)
+        saveAs(blob, fileName)
         appToast.success({ title: '导出成功', description: '已生成年级材料文件' })
     } catch (e) {
         appToast.error({
@@ -318,28 +318,28 @@ const exportAllMaterial = async () => {
 
         const list = studentsAll.value || []
         if (!list.length) throw new Error('暂无可导出的学生')
-        materialExportProgress.value = { done: 0, total: list.length }
-        const packedStudents = []
-        for (const s of list) {
-            const embedded = await embedEvidenceFilesForExport({
-                scope: 'grade',
-                semester,
-                student: s,
-            })
-            packedStudents.push(embedded)
-            materialExportProgress.value = { done: packedStudents.length, total: list.length }
-        }
 
         const serverConfig = await getServerConfig()
         const encryptionReady = Boolean(
             serverConfig?.encryption?.enabled && serverConfig?.encryption?.rsaPublicKeyJwk,
         )
         if (!encryptionReady) throw new Error('服务器未配置公钥或未启用加密，无法导出')
-        const payload = { semester, class: filterInfo, students: packedStudents }
-        const text = await createDyfText({ type: 'class', payload, serverConfig })
+
+        materialExportProgress.value = { done: 0, total: list.length }
+        const blob = await createDyfFileBlob({
+            type: 'grade',
+            semester,
+            classInfo: filterInfo,
+            students: list,
+            serverConfig,
+            onProgress: (p) => {
+                if (p.stage === 'collect')
+                    materialExportProgress.value = { done: p.done, total: p.total }
+            },
+        })
 
         const fileName = sanitizeFileName(`全部学生_${semester}_全部材料.dyf`)
-        saveAs(new Blob([text], { type: 'application/json' }), fileName)
+        saveAs(blob, fileName)
         appToast.success({ title: '导出成功', description: '已生成全部材料文件' })
     } catch (e) {
         appToast.error({
@@ -436,9 +436,9 @@ const handleStudentFileChange = async (event) => {
         studentImportProgress.value = { done: 0, total: files.length }
         const { results, successCount, restoredCount, failCount } = await importStudentsFromFiles({
             files,
-            importStudent: async (text, progress) => {
-                if (studentData?.importDyf) return await studentData.importDyf(text, progress)
-                return await studentData.importStudent(text)
+            importFile: (file, progress) => {
+                if (studentData?.importDyf) return studentData.importDyf(file, progress)
+                return studentData.importStudent(file)
             },
             onProgress: (p) => (studentImportProgress.value = p),
         })

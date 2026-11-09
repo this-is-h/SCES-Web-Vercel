@@ -1,12 +1,12 @@
 import { fileSystemManager } from '@/utils/FileSystemManager'
 import { safeJsonParse } from '@/utils/json'
 
-const normalizeScope = (scope) => {
+export const normalizeScope = (scope) => {
     const s = scope == null ? 'class' : String(scope)
     return s === 'grade' ? 'grade' : 'class'
 }
 
-const scopePath = (scope, path) => `${normalizeScope(scope)}/${path}`.replace(/\/+/g, '/')
+export const scopePath = (scope, path) => `${normalizeScope(scope)}/${path}`.replace(/\/+/g, '/')
 const needUpdateScoreCapsField = '__needUpdateScoreCaps'
 
 export { safeJsonParse }
@@ -510,7 +510,7 @@ export const buildStudentExportPayload = (student) => {
 }
 
 const dataUrlToBlob = (dataUrl) => {
-    const dataUrlMatch = String(dataUrl).match(/^data:([^;]+);base64,(.+)$/)
+    const dataUrlMatch = String(dataUrl).match(/^data:([^;]+);base64,(.*)$/)
     if (!dataUrlMatch) return null
     const mimeType = dataUrlMatch[1]
     const base64Payload = dataUrlMatch[2]
@@ -529,17 +529,34 @@ const extFromMime = (mime) => {
     return 'bin'
 }
 
-const arrayBufferToBase64 = (buffer) => {
-    const bytes = new Uint8Array(buffer)
-    let binary = ''
-    const chunkSize = 0x8000
-    for (let i = 0; i < bytes.length; i += chunkSize) {
-        binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize))
+// 分块读取文件并流式编码为 data URL（避免把整文件读进一个 base64 字符串导致超大证据 OOM）。
+const streamFileToDataUrl = async (file) => {
+    if (!file || typeof file.arrayBuffer !== 'function') return null
+    const mime = file.type || 'application/octet-stream'
+    const CHUNK = 3 * Math.floor((1024 * 1024) / 3)
+    const size = file.size || 0
+    let offset = 0
+    let acc = ''
+    const parts = []
+    while (offset < size) {
+        const end = Math.min(offset + CHUNK, size)
+        const sliceBuf = await file.slice(offset, end).arrayBuffer()
+        const view = new Uint8Array(sliceBuf)
+        for (let i = 0; i < view.length; i += 0x8000) {
+            acc += String.fromCharCode.apply(null, view.subarray(i, i + 0x8000))
+        }
+        offset = end
+        if (acc.length >= CHUNK) {
+            parts.push(btoa(acc))
+            acc = ''
+        }
+        await new Promise((r) => setTimeout(r, 0))
     }
-    return btoa(binary)
+    if (acc.length) parts.push(btoa(acc))
+    return `data:${mime};base64,${parts.join('')}`
 }
 
-const getUniqueFileName = async (dirPath, fileName) => {
+export const getUniqueFileName = async (dirPath, fileName) => {
     const cleaned = sanitizeFileName(fileName)
     const dotIndex = cleaned.lastIndexOf('.')
     const baseName = dotIndex > 0 ? cleaned.slice(0, dotIndex) : cleaned
@@ -655,11 +672,8 @@ export const embedEvidenceFilesForExport = async ({ scope = 'class', semester, s
                             false,
                         )
                         const file = await fh.getFile()
-                        const b64 = arrayBufferToBase64(await file.arrayBuffer())
-                        embedded.push({
-                            file: { name: f },
-                            content: `data:${file.type || 'application/octet-stream'};base64,${b64}`,
-                        })
+                        const content = await streamFileToDataUrl(file)
+                        embedded.push(content ? { file: { name: f }, content } : f)
                     } catch {
                         embedded.push(f)
                     }

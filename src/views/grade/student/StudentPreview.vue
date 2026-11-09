@@ -466,8 +466,7 @@ const handleFileChange = async (event) => {
         const details = []
 
         for (const f of files) {
-            const text = await f.text()
-            const r = importDyf ? await importDyf(text) : await importStudent(text)
+            const r = importDyf ? await importDyf(f) : await importStudent(f)
             if (Array.isArray(r?.details) && r.details.length) {
                 details.push(...r.details.map((d) => ({ ...d })))
             } else {

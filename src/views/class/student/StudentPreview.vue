@@ -540,10 +540,9 @@ const handleFileChange = async (event) => {
         const files = Array.from(event.target.files || [])
         if (!files.length) return
 
-        importProgress.value = { done: 0, total: files.length }
         const { results, okCount, failCount } = await importStudentsFromFiles({
             files,
-            importStudent,
+            importFile: importStudent,
             onProgress: (p) => (importProgress.value = p),
         })
 

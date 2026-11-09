@@ -9,7 +9,7 @@ import {
 import InputTags from '@/components/InputTags.vue'
 import { createAppToast } from '@/utils/toast'
 import { generateRsaOaepKeyPair } from '@/utils/crypto'
-import { parseDyfText } from '@/utils/dyfFile'
+import { parseDyfFile } from '@/utils/dyfFile'
 import { saveAs } from 'file-saver'
 import { mapFileSystemErrorToUserMessage } from '@/utils/error'
 
@@ -493,35 +493,51 @@ const handleDyfFileChange = async (event) => {
     dyfParsedPayload.value = null
     isDyfParsing.value = true
     try {
-        const text = await file.text()
         const cfg = serverConfig.value ?? (await getServerConfig())
         const localConfig = await ensureLocalConfig({ scope: 'grade' })
         const privateKeyJwk = localConfig?.encryption?.privateKeyJwk ?? null
-        const result = await parseDyfText({
-            text,
+        // 预览：仅解析元信息与首个学生，避免把 >1GB 文件整段读入内存。
+        let firstStudent = null
+        let meta = null
+        const result = await parseDyfFile({
+            file,
             serverConfig: cfg,
             privateKeyJwk,
+            onMeta: (m) => {
+                meta = m
+            },
+            onStudent: (student) => {
+                if (!firstStudent) firstStudent = student
+                return false // 仅取首个学生用于预览
+            },
         })
         if (!result?.ok) {
             appToast.error({ title: '解析失败', description: result?.message || '无法解析该文件' })
             return
         }
-        dyfParsedPayload.value = result.payload ?? null
+        dyfParsedPayload.value = firstStudent
         dyfRawOutput.value = JSON.stringify(
             {
                 type: result.type,
-                payload: result.payload,
+                count: result.count,
+                semester: meta?.semester ?? null,
+                classInfo: meta?.classInfo ?? null,
+                firstStudent,
             },
             null,
             2,
         )
-        appToast.success({ title: '解析成功', description: '已展示解密后的原始数据（仅查看）' })
+        appToast.success({
+            title: '解析成功',
+            description:
+                result.count > 1
+                    ? `已解析结构（共 ${result.count} 名学生，预览仅展示首个）`
+                    : '已解密并展示原始数据（仅查看）',
+        })
     } catch (e) {
         appToast.error({
             title: '读取失败',
-            description: mapFileSystemErrorToUserMessage(e, {
-                action: '读取并解析 dyf 文件',
-            }),
+            description: mapFileSystemErrorToUserMessage(e, { action: '读取并解析 dyf 文件' }),
         })
     } finally {
         isDyfParsing.value = false

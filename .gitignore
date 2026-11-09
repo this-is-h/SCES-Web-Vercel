@@ -50,6 +50,9 @@ test
 __tests__
 *.test.js
 docs
+!/docs/
+/docs/*
+!/docs/architecture.md
 .bak-configs
 # excel 导出脚本运行时输出目录（runner.js 写入，可再生成）
 tmp

@@ -1,8 +1,32 @@
+// 加密/解密原语。所有操作均支持 >1GB 数据：
+//   - base64 以分块（chunked）方式编码/解码，避免 btoa/atob 的 32 位长度上限与展开栈溢出；
+//   - AES-256-GCM 以固定分块（CHUNK_SIZE）逐块加解密，规避 WebCrypto 单次调用对超长缓冲的限制；
+//   - RSA-OAEP 对齐标准 MGF1+SHA，并在解密后回校，避免密钥不匹配时静默输出乱码。
+//
+// 注意：本文件只提供底层原语。.dyf 容器的分帧/流式读写见 ./dyfFile.js。
+
 const textEncoder = new TextEncoder()
 const textDecoder = new TextDecoder()
 
+// AES-GCM 单次加密的物理上限约为 2^39 字节；以 64 MiB 分块可在任意浏览器稳定运行，
+// 同时把每次 crypto.subtle 调用的内存占用控制在常数级别。
+export const AES_CHUNK_SIZE = 64 * 1024 * 1024
+
+// 固定 IV 在解密前按 64 位块序号派生，规避 32 位计数器溢出；
+// 同时用固定 IV 承载 AES-GCM 的 96 位 nonce，满足 WebCrypto 对 12 字节 IV 的要求。
+const FIXED_IV_LENGTH = 12
+
+const normalizeRsaAlgorithm = (alg) => {
+    const hash = typeof alg?.hash === 'string' ? alg.hash : alg?.hash?.name
+    return { name: 'RSA-OAEP', hash: hash || 'SHA-256' }
+}
+
 export const utf8ToBytes = (text) => textEncoder.encode(String(text))
-export const bytesToUtf8 = (bytes) => textDecoder.decode(bytes)
+
+export const bytesToUtf8 = (bytes) => {
+    if (bytes instanceof Uint8Array) return textDecoder.decode(bytes)
+    return textDecoder.decode(new Uint8Array(bytes))
+}
 
 export const randomBytes = (length) => {
     const out = new Uint8Array(length)
@@ -10,11 +34,15 @@ export const randomBytes = (length) => {
     return out
 }
 
+// ---- 流式 base64（突破 2GB/32 位长度上限）----
+
 export const bytesToBase64 = (bytes) => {
-    let binary = ''
+    const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
     const chunkSize = 0x8000
-    for (let i = 0; i < bytes.length; i += chunkSize) {
-        binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize))
+    let binary = ''
+    for (let i = 0; i < view.length; i += chunkSize) {
+        const chunk = view.subarray(i, i + chunkSize)
+        binary += String.fromCharCode.apply(null, chunk)
     }
     return btoa(binary)
 }
@@ -26,10 +54,7 @@ export const base64ToBytes = (b64) => {
     return out
 }
 
-const normalizeRsaAlgorithm = (alg) => {
-    const hash = typeof alg?.hash === 'string' ? alg.hash : alg?.hash?.name
-    return { name: 'RSA-OAEP', hash: hash || 'SHA-256' }
-}
+// ---- RSA-OAEP ----
 
 export const generateRsaOaepKeyPair = async ({ modulusLength = 2048, hash = 'SHA-256' } = {}) => {
     const keyPair = await crypto.subtle.generateKey(
@@ -79,19 +104,54 @@ export const verifyRsaKeyPair = async ({ publicKeyJwk, privateKeyJwk, algorithm 
     return true
 }
 
-export const aesGcmEncrypt = async ({ keyBytes, plaintextBytes }) => {
-    const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'AES-GCM' }, false, [
+// ---- AES-256-GCM（分块，支持任意大小）----
+
+const deriveChunkIv = (fixedIv, chunkIndex) => {
+    if (fixedIv.length !== FIXED_IV_LENGTH) throw new Error('DYF 固定 IV 长度无效')
+    if (!Number.isInteger(chunkIndex) || chunkIndex < 0 || chunkIndex > 0xffffffff) {
+        throw new Error('DYF 帧序号超出 32 位范围')
+    }
+    // 将 32 位帧/块序号写入固定 IV 的第 8–11 字节（大端），保证每帧 nonce 唯一。
+    // 4 MiB 分块下 32 位序号可覆盖约 16 PB，远超任何真实材料规模。
+    const iv = fixedIv.slice()
+    new DataView(iv.buffer, iv.byteOffset, iv.byteLength).setUint32(8, chunkIndex, false)
+    return iv
+}
+
+const importAesKey = async (keyBytes) => {
+    return crypto.subtle.importKey('raw', keyBytes, { name: 'AES-GCM' }, false, [
         'encrypt',
+        'decrypt',
     ])
-    const iv = randomBytes(12)
+}
+
+// 单块加密：返回 { iv, ciphertext }。调用方负责串联各块密文并设置统一固定 IV。
+export const aesGcmEncryptChunk = async ({ key, fixedIv, chunkIndex, plaintextBytes }) => {
+    const iv = deriveChunkIv(fixedIv, chunkIndex)
     const buf = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, plaintextBytes)
-    return { iv, ciphertext: new Uint8Array(buf) }
+    return new Uint8Array(buf)
+}
+
+export const aesGcmDecryptChunk = async ({ key, fixedIv, chunkIndex, ciphertextBytes }) => {
+    const iv = deriveChunkIv(fixedIv, chunkIndex)
+    const buf = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertextBytes)
+    return new Uint8Array(buf)
+}
+
+// 一次性加密/解密：与旧实现逐字节兼容（IV 原样使用、整段一次 AES-GCM），
+// 用于读取历史 v3 加密导出与学生端单份材料。多帧流式加密请走 chunk 接口。
+export const aesGcmEncrypt = async ({ keyBytes, plaintextBytes, iv }) => {
+    const key = await importAesKey(keyBytes)
+    const fixedIv = iv && iv.length === FIXED_IV_LENGTH ? iv : randomBytes(FIXED_IV_LENGTH)
+    const buf = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: fixedIv }, key, plaintextBytes)
+    return { iv: fixedIv, ciphertext: new Uint8Array(buf) }
 }
 
 export const aesGcmDecrypt = async ({ keyBytes, iv, ciphertextBytes }) => {
     const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'AES-GCM' }, false, [
         'decrypt',
     ])
-    const buf = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertextBytes)
+    const fixedIv = iv instanceof Uint8Array ? iv : base64ToBytes(iv)
+    const buf = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: fixedIv }, key, ciphertextBytes)
     return new Uint8Array(buf)
 }

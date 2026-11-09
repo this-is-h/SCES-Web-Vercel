@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, provide, ref, watch } from 'vue'
 import { ensureLocalConfig, getLocalClassInfo, getServerConfig } from '@/utils/config'
-import { parseDyfText } from '@/utils/dyfFile'
+import { parseDyfFile, makeImportEvidenceSink } from '@/utils/dyfFile'
 import { createAppToast } from '@/utils/toast'
 import {
     getStudentIdentity,
@@ -42,21 +42,8 @@ const notifyMigrationIfNeeded = (semester) => {
     appToast.info(`检测到 ${migratedCount} 份旧版学生数据，已自动迁移`)
 }
 
-const importStudent = async (text) => {
-    const semester = normalizedSemester.value
-    if (!semester) return { ok: false, message: '当前学期无效' }
-
-    const serverConfig = await getServerConfig()
-    const localConfig = await ensureLocalConfig({ scope: 'class' })
-    const localClassInfo = getLocalClassInfo(localConfig)
-    const privateKeyJwk = localConfig?.encryption?.privateKeyJwk
-
-    const dyf = await parseDyfText({ text, serverConfig, privateKeyJwk })
-    if (!dyf.ok) return { ok: false, message: dyf.message }
-    if (dyf.type !== 'student')
-        return { ok: false, message: '该文件不是个人材料，无法作为学生导入' }
-
-    const parsed = normalizeImportedStudentPayload(dyf.payload)
+const importStudentObject = async ({ student, semester, localClassInfo }) => {
+    const parsed = normalizeImportedStudentPayload(student)
     if (!parsed) return { ok: false, message: '导入文件缺少有效学生数据结构' }
     const { name, id } = getStudentIdentity(parsed) || {}
     if (!name || !id) return { ok: false, message: '导入文件缺少学生信息（姓名/学号）', name, id }
@@ -101,6 +88,34 @@ const importStudent = async (text) => {
 
     const r = await store.addStudent({ scope: 'class', semester, student: parsed })
     return { ...(r || {}), status: r?.status || (r?.ok ? 'success' : 'error') }
+}
+
+const importStudent = async (file) => {
+    const semester = normalizedSemester.value
+    if (!semester) return { ok: false, message: '当前学期无效' }
+
+    const serverConfig = await getServerConfig()
+    const localConfig = await ensureLocalConfig({ scope: 'class' })
+    const localClassInfo = getLocalClassInfo(localConfig)
+    const privateKeyJwk = localConfig?.encryption?.privateKeyJwk
+    const evidenceSink = makeImportEvidenceSink({ scope: 'class', semester })
+
+    const out = {}
+    const dyf = await parseDyfFile({
+        file,
+        serverConfig,
+        privateKeyJwk,
+        evidenceSink,
+        onMeta: (meta) => {
+            if (meta.type !== 'student') throw new Error('该文件不是个人材料，无法作为学生导入')
+        },
+        onStudent: async (student) => {
+            const r = await importStudentObject({ student, semester, localClassInfo })
+            Object.assign(out, r)
+        },
+    })
+    if (!dyf.ok) return { ok: false, message: dyf.message }
+    return { ...(out || {}), ok: Boolean(out?.ok), status: out?.status || 'error' }
 }
 
 const updateStudent = async (student) => {

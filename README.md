@@ -1,56 +1,23 @@
 # SCES-Web-Vercel — 预览版门户
 
-This template should help get you started developing with Vue 3 in Vite.
+学生综合素质测评管理系统的 Web 预览端，基于 Vue 3、Vite 和 Pinia，提供学生申请、本地材料管理、班级/年级汇总及 Excel 导出。业务文件保存在用户授权的本地目录，不使用服务端数据库保存学生材料。
 
-## Recommended IDE Setup
+## 开发环境
 
-[VS Code](https://code.visualstudio.com/) + [Vue (Official)](https://marketplace.visualstudio.com/items?itemName=Vue.volar) (and disable Vetur).
+- 使用 Node 22（至少 22.12）与 pnpm 10.9.0，与 CI 保持一致；`package.json` 的 engines 未声明 Node 24 支持。
+- 本地目录读写依赖浏览器 `showDirectoryPicker`；开发前确认 File System Access API 可用，不能把普通页面可打开视为本地文件工作流兼容。
+- Vue 单文件组件使用 Vue 官方编辑器扩展；类型检查由 `vue-tsc` 执行。
 
-## Recommended Browser Setup
-
-- Chromium-based browsers (Chrome, Edge, Brave, etc.):
-    - [Vue.js devtools](https://chromewebstore.google.com/detail/vuejs-devtools/nhdogjmejiglipccpnnnanhbledajbpd)
-    - [Turn on Custom Object Formatter in Chrome DevTools](http://bit.ly/object-formatters)
-- Firefox:
-    - [Vue.js devtools](https://addons.mozilla.org/en-US/firefox/addon/vue-js-devtools/)
-    - [Turn on Custom Object Formatter in Firefox DevTools](https://fxdx.dev/firefox-devtools-custom-object-formatters/)
-
-## Type Support for `.vue` Imports in TS
-
-TypeScript cannot handle type information for `.vue` imports by default, so we replace the `tsc` CLI with `vue-tsc` for type checking. In editors, we need [Volar](https://marketplace.visualstudio.com/items?itemName=Vue.volar) to make the TypeScript language service aware of `.vue` types.
-
-## Customize configuration
-
-See [Vite Configuration Reference](https://vite.dev/config/).
-
-## Project Setup
+## 常用命令
 
 ```sh
-pnpm install
-```
-
-### Compile and Hot-Reload for Development
-
-```sh
-pnpm dev
-```
-
-### Type-Check, Compile and Minify for Production
-
-```sh
-pnpm build
-```
-
-### Run Unit Tests with [Vitest](https://vitest.dev/)
-
-```sh
-pnpm test:unit
-```
-
-### Lint with [ESLint](https://eslint.org/)
-
-```sh
-pnpm lint
+pnpm install --frozen-lockfile
+pnpm dev                 # Vite 开发服务，以终端输出地址为准
+pnpm type-check          # Vue/TypeScript 类型检查
+pnpm test:unit run       # 单次测试，与 CI 一致
+pnpm lint                # 只检查，不自动修改源码
+pnpm build               # 类型检查 + 生产构建
+pnpm preview             # 本地预览构建产物
 ```
 
 ## Excel 导出
@@ -73,9 +40,10 @@ node ./src/utils/excel/runner.js grade --students ./tmp/students.json --out ./tm
 
 ### 测试与覆盖率
 
-```sh
-npm run test:coverage
-npm run test:coverage:nyc
-```
+`pnpm test:coverage` 可生成覆盖率报告，但本仓没有配置覆盖率阈值。现有回归位于 `tests/dyfFile.container.test.mjs` 和 `tests/studentStorage.test.mjs`，覆盖容器完整性、旧格式及附件字节往返；没有名为 `excelFlow.test.js` 的测试，Excel 模板变动仍需实际导出并核对工作表和公式。
 
-Excel 相关核心测试位于 `src/utils/excel/excelFlow.test.js`，覆盖导出公式一致性场景。
+## 架构与维护
+
+- [架构说明](docs/architecture.md)：本地存储、`.dyf` 版本边界、附件和导出约束。
+- [贡献指南](CONTRIBUTING.md)：分支、提交、测试及部署门禁。
+- `public/configs/` 是预览端运行配置；与在线端契约的种子快照不是自动双向同步关系。
